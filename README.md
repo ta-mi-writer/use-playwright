@@ -7,5 +7,5 @@
 環境変数を `.env` ファイルから読み込んで `uv` で実行する場合は、`--env-file .env` オプションを使用します。
 
 ```bash
-PLAYWRIGHT_BROWSERS_PATH=.browsers uv run --env-file .env test.py
+PLAYWRIGHT_BROWSERS_PATH=.browsers uv run --env-file .env src/uploader.py
 ```
