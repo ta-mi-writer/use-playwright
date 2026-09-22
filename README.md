@@ -1,4 +1,4 @@
-# Uploader
+# Use Playwright
 
 ## Playwrightの実行方法
 
