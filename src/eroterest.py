@@ -18,12 +18,12 @@ def main():
       )
       print(f"Status: {response.status if response else 'No response'}")
       print(f"URL: {page.url}")
-      page.screenshot(path="screenshot.png", full_page=True)
-      print("Screenshot saved to screenshot.png")
+      page.screenshot(path="screenshot/screenshot.png", full_page=True)
+      print("Screenshot saved to screenshot/screenshot.png")
     except PlaywrightError as e:
       print(f"Failed to open page: {e}")
-      page.screenshot(path="error_screenshot.png", full_page=True)
-      print("Error screenshot saved to error_screenshot.png")
+      page.screenshot(path="screenshot/error_screenshot.png", full_page=True)
+      print("Error screenshot saved to screenshot/error_screenshot.png")
     finally:
       context.close()
 
