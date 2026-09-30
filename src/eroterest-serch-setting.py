@@ -9,9 +9,10 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", ".browsers")
 
 def main():
   with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    context = browser.new_context(
-      user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    context = p.chromium.launch_persistent_context(
+      user_data_dir=".browser-data",
+      headless=True,
+      user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
     page = context.new_page()
     try:
@@ -131,7 +132,7 @@ def main():
       )
       print("Error screenshot saved to screenshot/error_eroterest_search_setting.png")
     finally:
-      browser.close()
+      context.close()
 
 
 if __name__ == "__main__":
