@@ -1,3 +1,6 @@
+import json
+import os
+
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
@@ -18,6 +21,36 @@ def main():
       )
       print(f"Status: {response.status if response else 'No response'}")
       print(f"URL: {page.url}")
+
+      # .listWrapper 内の /page/ リンクを重複排除して収集
+      urls = page.evaluate("""() => {
+        const links = Array.from(document.querySelectorAll('.listWrapper a[href*="/page/"]'));
+        return Array.from(new Set(links.map(a => a.href)));
+      }""")
+      print(f"Extracted URLs count: {len(urls)}")
+      for u in urls[:5]:
+        print(f"  {u}")
+
+      # データ保存（JSON形式、重複排除済み、scraped: false 付与）
+      os.makedirs("data", exist_ok=True)
+      data_path = "data/eroterest-page.json"
+      existing = {}
+      if os.path.exists(data_path):
+        try:
+          with open(data_path, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+            existing = {
+              item.get("url"): item.get("scraped", False)
+              for item in existing_data
+              if isinstance(item, dict)
+            }
+        except json.JSONDecodeError, OSError:
+          existing = {}
+      result = [{"url": u, "scraped": existing.get(u, False)} for u in urls]
+      with open(data_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+      print(f"Saved {len(result)} URLs to {data_path}")
+
       page.screenshot(path="screenshot/screenshot.png", full_page=True)
       print("Screenshot saved to screenshot/screenshot.png")
     except PlaywrightError as e:

@@ -53,3 +53,5 @@
 ```bash
 uv run --env-file .env main.py
 ```
+
+Playwrightを使用したPythonファイルの実行方法は`README.md`に記載されているので、実行前に参照してください。
