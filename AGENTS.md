@@ -44,14 +44,12 @@
 
 ---
 
-## Pythonファイルの実行、環境変数の使用
+## Playwrightの実行方法
 
-このプロジェクトでは、`uv`が導入されているため、下記のように`uv`を活用してください。
+このプロジェクトでPlaywrightを使用するスクリプト（例: `test.py`）を実行する場合、ブラウザの格納先（`PLAYWRIGHT_BROWSERS_PATH`）として `.browsers` ディレクトリを指定して実行してください。
 
-`main.py`を実行する場合：
+環境変数を `.env` ファイルから読み込んで `uv` で実行する場合は、`--env-file .env` オプションを使用します。
 
 ```bash
-uv run --env-file .env main.py
+PLAYWRIGHT_BROWSERS_PATH=.browsers uv run --env-file .env src/eroterest.py
 ```
-
-Playwrightを使用したPythonファイルの実行方法は`README.md`に記載されているので、実行前に参照してください。
