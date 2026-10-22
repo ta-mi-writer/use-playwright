@@ -112,6 +112,8 @@ def write_json_atomic(path: Path, data: list[dict[str, object]]) -> None:
       json.dump(data, f, indent=2, ensure_ascii=False)
       f.flush()
       os.fsync(f.fileno())
+    # mkstemp は 0600 を作るため、既存ファイルと同じモードに揃える
+    os.chmod(tmp_path, path.stat().st_mode & 0o777 if path.exists() else 0o664)
     os.replace(tmp_path, path)
   except BaseException:
     tmp_path.unlink(missing_ok=True)
