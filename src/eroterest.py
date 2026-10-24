@@ -31,7 +31,6 @@ def parse_args() -> argparse.Namespace:
     description="eroterest の作品一覧から詳細ページURLを収集する"
   )
   parser.add_argument("--word", default=DEFAULT_WORD, help="検索ワード")
-  parser.add_argument("--page", type=int, default=1, help="一覧ページ番号")
   parser.add_argument("--headed", action="store_true", help="ブラウザを表示する")
   parser.add_argument("--timeout", type=int, default=30000, help="タイムアウト(ms)")
   parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="User-Agent")
@@ -155,8 +154,7 @@ def main() -> int:
   DATA_DIR.mkdir(parents=True, exist_ok=True)
   SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-  url = build_list_url(args.word, args.page)
-  print(f"Target URL: {url}")
+  all_collected_urls: list[str] = []
 
   with sync_playwright() as p:
     context = None
@@ -169,72 +167,101 @@ def main() -> int:
       )
       page = context.new_page()
 
-      response = page.goto(
-        url,
-        timeout=args.timeout,
-        wait_until="domcontentloaded",
-      )
-      status = response.status if response else None
-      print(f"Status: {status if status is not None else 'No response'}")
-      print(f"URL: {page.url}")
+      current_page = 1
+      while True:
+        url = build_list_url(args.word, current_page)
+        print(f"\n--- Page {current_page} ---")
+        print(f"Target URL: {url}")
 
-      if status is not None and status >= 400:
-        print(f"Aborting: HTTP {status} が返されました。既存データは変更しません。")
-        return 1
-
-      # JS描画の完了を待ってから抽出する（0件抽出での既存データ流失を防ぐ）
-      try:
-        page.wait_for_selector(
-          LIST_CONTAINER_SELECTOR,
-          state="attached",
+        response = page.goto(
+          url,
           timeout=args.timeout,
+          wait_until="domcontentloaded",
         )
-      except PlaywrightTimeoutError:
+        status = response.status if response else None
+        print(f"Status: {status if status is not None else 'No response'}")
+        print(f"URL: {page.url}")
+
+        if status is not None and status >= 400:
+          print(
+            f"Aborting: HTTP {status} が返されました。これまでの収集分で続行します。"
+          )
+          break
+
+        # JS描画の完了を待ってから抽出する
+        try:
+          page.wait_for_selector(
+            LIST_CONTAINER_SELECTOR,
+            state="attached",
+            timeout=args.timeout,
+          )
+        except PlaywrightTimeoutError:
+          print(
+            f"一覧コンテナ {LIST_CONTAINER_SELECTOR} が見つかりませんでした。ページネーションを終了します。"
+          )
+          break
+
+        cards: list[dict[str, str]] = page.evaluate(
+          """(selector) => {
+            const links = Array.from(document.querySelectorAll(selector));
+            const seen = new Set();
+            const result = [];
+            for (const a of links) {
+              const url = a.href;
+              if (seen.has(url)) continue;
+              seen.add(url);
+              const itemWrapper = a.closest('.itemWrapper') || a.parentElement;
+              const timeEl = itemWrapper ? itemWrapper.querySelector('.itemTime') : null;
+              const time = timeEl ? timeEl.textContent.trim() : '';
+              result.push({ url, time });
+            }
+            return result;
+          }""",
+          LIST_LINK_SELECTOR,
+        )
+
+        if not cards:
+          print("カードが1件も取得できませんでした。ページネーションを終了します。")
+          break
+
+        # 条件に合致するカードと、ページ内の全カードの時刻をチェック
+        page_urls: list[str] = []
+        has_within_hours = False
+
+        for c in cards:
+          time_text = str(c.get("time") or "")
+          if card_matches(time_text, args.within_hours):
+            has_within_hours = True
+            page_urls.append(c["url"])
+
+        print(f"Extracted cards count: {len(cards)}")
+        print(f"Matched URLs count in this page: {len(page_urls)}")
+        print(f"Within hours: {args.within_hours}")
+
+        all_collected_urls.extend(page_urls)
+
+        # このページに within_hours 以内のカードが1件もなければ、次のページ以降はさらに古いため終了
+        if not has_within_hours:
+          print(
+            "指定時間以内のカードが見つからなかったため、ページネーションを終了します。"
+          )
+          break
+
+        current_page += 1
+
+      if not all_collected_urls:
         print(
-          f"Aborting: 一覧コンテナ {LIST_CONTAINER_SELECTOR} が見つかりませんでした。"
-          " サイトの構造変更の可能性があります。既存データは変更しません。"
+          "Aborting: 条件に合致するURLを1件も取得できませんでした。既存データは変更しません。"
         )
-        return 1
-
-      cards: list[dict[str, str]] = page.evaluate(
-        """(selector) => {
-          const links = Array.from(document.querySelectorAll(selector));
-          const seen = new Set();
-          const result = [];
-          for (const a of links) {
-            const url = a.href;
-            if (seen.has(url)) continue;
-            seen.add(url);
-            const itemWrapper = a.closest('.itemWrapper') || a.parentElement;
-            const timeEl = itemWrapper ? itemWrapper.querySelector('.itemTime') : null;
-            const time = timeEl ? timeEl.textContent.trim() : '';
-            result.push({ url, time });
-          }
-          return result;
-        }""",
-        LIST_LINK_SELECTOR,
-      )
-      urls: list[str] = [
-        c["url"]
-        for c in cards
-        if card_matches(str(c.get("time") or ""), args.within_hours)
-      ]
-      print(f"Extracted cards count: {len(cards)}")
-      print(f"Matched URLs count: {len(urls)}")
-      print(f"Within hours: {args.within_hours}")
-      for u in urls[:5]:
-        print(f"  {u}")
-
-      if not urls:
-        print("Aborting: URLを1件も取得できませんでした。既存データは変更しません。")
         return 1
 
       existing = load_existing(DATA_PATH)
-      result = merge_urls(existing, urls)
+      result = merge_urls(existing, all_collected_urls)
       write_json_atomic(DATA_PATH, result)
-      print(f"Saved {len(result)} URLs to {DATA_PATH}")
+      print(f"\nSaved {len(result)} total URLs to {DATA_PATH}")
 
-      save_screenshot(page, SCREENSHOT_DIR / "screenshot.png")
+      if page is not None:
+        save_screenshot(page, SCREENSHOT_DIR / "screenshot.png")
       return 0
     except PlaywrightError as e:
       print(f"Failed to open page: {e}")
