@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -34,11 +35,30 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--headed", action="store_true", help="ブラウザを表示する")
   parser.add_argument("--timeout", type=int, default=30000, help="タイムアウト(ms)")
   parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="User-Agent")
+  parser.add_argument(
+    "--within-hours",
+    type=int,
+    default=1,
+    help="1時間以内でスクレイピングする時間（時間）。これを超える時間のカードは対象外",
+  )
   return parser.parse_args()
 
 
 def build_list_url(word: str, page: int) -> str:
   return f"{BASE_URL}?word={quote(word)}&c=&page={page}"
+
+
+def card_matches(time_text: str, within_hours: int) -> bool:
+  """カードの表示時刻がスクレイピング対象かどうか。"""
+  text = time_text.strip()
+  minutes_match = re.fullmatch(r"(\d+)\s*分前", text)
+  if minutes_match:
+    # 1時間未満は全て〇分前と表記されるため、常に取得対象とする
+    return True
+  hours_match = re.fullmatch(r"(\d+)\s*時間前", text)
+  if hours_match:
+    return int(hours_match.group(1)) <= within_hours
+  return False
 
 
 def load_existing(path: Path) -> dict[str, bool]:
@@ -176,14 +196,32 @@ def main() -> int:
         )
         return 1
 
-      urls: list[str] = page.evaluate(
+      cards: list[dict[str, str]] = page.evaluate(
         """(selector) => {
           const links = Array.from(document.querySelectorAll(selector));
-          return Array.from(new Set(links.map(a => a.href)));
+          const seen = new Set();
+          const result = [];
+          for (const a of links) {
+            const url = a.href;
+            if (seen.has(url)) continue;
+            seen.add(url);
+            const itemWrapper = a.closest('.itemWrapper') || a.parentElement;
+            const timeEl = itemWrapper ? itemWrapper.querySelector('.itemTime') : null;
+            const time = timeEl ? timeEl.textContent.trim() : '';
+            result.push({ url, time });
+          }
+          return result;
         }""",
         LIST_LINK_SELECTOR,
       )
-      print(f"Extracted URLs count: {len(urls)}")
+      urls: list[str] = [
+        c["url"]
+        for c in cards
+        if card_matches(str(c.get("time") or ""), args.within_hours)
+      ]
+      print(f"Extracted cards count: {len(cards)}")
+      print(f"Matched URLs count: {len(urls)}")
+      print(f"Within hours: {args.within_hours}")
       for u in urls[:5]:
         print(f"  {u}")
 
