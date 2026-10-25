@@ -31,7 +31,6 @@ def parse_args() -> argparse.Namespace:
     description="eroterest の作品一覧から詳細ページURLを収集する"
   )
   parser.add_argument("--word", default=DEFAULT_WORD, help="検索ワード")
-  parser.add_argument("--headed", action="store_true", help="ブラウザを表示する")
   parser.add_argument("--timeout", type=int, default=30000, help="タイムアウト(ms)")
   parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="User-Agent")
   parser.add_argument(
@@ -162,7 +161,7 @@ def main() -> int:
     try:
       context = p.chromium.launch_persistent_context(
         user_data_dir=str(PROJECT_ROOT / ".browser-data"),
-        headless=not args.headed,
+        headless=True,
         user_agent=args.user_agent,
       )
       page = context.new_page()
