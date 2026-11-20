@@ -1,4 +1,5 @@
 import argparse
+import random
 import re
 import sys
 from urllib.parse import quote
@@ -23,6 +24,7 @@ BASE_URL = "https://movie.eroterest.net/"
 DEFAULT_WORD = "熟女"
 LIST_CONTAINER_SELECTOR = ".listWrapper"
 LIST_LINK_SELECTOR = '.listWrapper a[href*="/page/"]'
+PAGE_DELAY_JITTER = 0.5
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +40,16 @@ def parse_args() -> argparse.Namespace:
     default=1,
     help="1時間以内でスクレイピングする時間（時間）。これを超える時間のカードは対象外",
   )
-  return parser.parse_args()
+  parser.add_argument(
+    "--page-delay",
+    type=float,
+    default=2.0,
+    help="ページ間の待機時間（秒）。0で無効",
+  )
+  args = parser.parse_args()
+  if args.page_delay < 0:
+    parser.error("--page-delay は 0 以上で指定してください")
+  return args
 
 
 def build_list_url(word: str, page: int) -> str:
@@ -63,6 +74,7 @@ def main() -> int:
   SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
   all_collected_urls: list[str] = []
+  seen_urls: set[str] = set()
 
   with sync_playwright() as p:
     context = None
@@ -140,17 +152,33 @@ def main() -> int:
             has_within_hours = True
             page_urls.append(c["url"])
 
+        new_page_urls: list[str] = []
+        duplicate_count = 0
+        for u in page_urls:
+          if u in seen_urls:
+            duplicate_count += 1
+            continue
+          seen_urls.add(u)
+          all_collected_urls.append(u)
+          new_page_urls.append(u)
+
         print(f"Extracted cards count: {len(cards)}")
         print(f"Matched URLs count in this page: {len(page_urls)}")
+        print(f"New URLs added: {len(new_page_urls)}")
+        print(f"Duplicates skipped: {duplicate_count}")
         print(f"Within hours: {args.within_hours}")
-
-        all_collected_urls.extend(page_urls)
 
         if not has_within_hours:
           print(
             "指定時間以内のカードが見つからなかったため、ページネーションを終了します。"
           )
           break
+
+        if args.page_delay > 0:
+          jitter = random.uniform(-PAGE_DELAY_JITTER, PAGE_DELAY_JITTER)
+          delay = max(0.0, args.page_delay + jitter)
+          print(f"Waiting {delay:.1f}s before next page...")
+          page.wait_for_timeout(int(delay * 1000))
 
         current_page += 1
 
