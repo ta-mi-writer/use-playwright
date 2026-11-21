@@ -1,10 +1,13 @@
 import os
 import re
+import sys
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", ".browsers")
+
+UNCHECKED_IDS = ["31", "33", "38", "39", "46", "49", "50"]
 
 
 def main():
@@ -27,7 +30,6 @@ def main():
       link = page.get_by_role("link", name=re.compile("表示設定"))
       link.click(timeout=30000)
       print("Clicked '表示設定' link")
-      # モーダル/設定フォームエリアの表示を明示的に待機
       settings_form = page.locator(
         "#mypageSettingForm, .mypageSettingForm, .modal, [role='dialog']"
       ).first
@@ -40,7 +42,6 @@ def main():
       settings_heading.wait_for(state="visible", timeout=30000)
       print("Settings heading is visible")
 
-      # .form-group.proids と各チェックボックスの display: none を強制的に表示状態に
       page.evaluate("""() => {
         document.querySelectorAll('.form-group.proids, .form-group.proids *').forEach(el => {
           if (el.style.display === 'none') el.style.display = 'block';
@@ -51,44 +52,40 @@ def main():
       }""")
       print("Forced display for .form-group.proids and checkboxes")
 
-      # 未チェックにしたいIDのチェックを外す
-      unchecked_ids = ["31", "33", "38", "39", "46", "49", "50"]
-
-      # すべてにチェックを入れる/外すリンクをクリックして全選択状態に
-      all_check_link = page.locator(".mypageSettingProidAllCheck")
-      # まずリンクをクリックして全選択状態にする（リンクの動作に依存）
-      all_check_link.click(timeout=30000)
-      print("Clicked all check link (select all)")
-
-      # 未チェックにしたいIDのチェックを外す（evaluate で直接変更）
-      for id_val in unchecked_ids:
-        page.evaluate(
-          """(id) => {{
+      # 決定的に設定: 全プロイドをチェックし、対象7つだけ未チェックに
+      page.evaluate(
+        """(ids) => {
+          document.querySelectorAll('input[name="proids[]"]').forEach(cb => {
+            cb.checked = true;
+            cb.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          ids.forEach(id => {
             const cb = document.getElementById('mypage_setting_proids_' + id);
-            if (cb) {{
-              cb.style.display = 'block';
+            if (cb) {
               cb.checked = false;
-            }}
-          }}""",
-          id_val,
-        )
-      print("Unchecked IDs: 31, 33, 38, 39, 46, 49, 50")
+              cb.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          });
+        }""",
+        UNCHECKED_IDS,
+      )
+      print(f"Set all proids checked, unchecked: {UNCHECKED_IDS}")
 
-      # 再生時間: 20分以上（evaluate で直接変更）
+      # 再生時間: 20分以上
       page.evaluate("""() => {
         const cb = document.getElementById('mypage_setting_times_20');
         if (cb) { cb.style.display = 'block'; cb.checked = true; }
       }""")
       print("Selected time: 20")
 
-      # 表示件数: 40件（evaluate で直接変更）
+      # 表示件数: 40件
       page.evaluate("""() => {
         const cb = document.getElementById('mypage_setting_perpage_40');
         if (cb) { cb.style.display = 'block'; cb.checked = true; }
       }""")
       print("Selected perpage: 40")
 
-      # 動画削除済み記事: 表示しない（evaluate で直接変更）
+      # 動画削除済み記事: 表示しない
       page.evaluate("""() => {
         const cb = document.getElementById('mypage_setting_hide_deleted_1');
         if (cb) { cb.style.display = 'block'; cb.checked = true; }
@@ -116,8 +113,8 @@ def main():
       save_button.click(timeout=30000)
       print("Clicked save button")
 
-      # 保存完了後のスクリーンショット
-      page.wait_for_load_state("networkidle", timeout=30000)
+      # 保存完了後のスクリーンショット（networkidle は使わない）
+      page.wait_for_timeout(1500)
       page.screenshot(
         path="screenshot/eroterest_search_setting_saved.png", full_page=True
       )
@@ -125,12 +122,62 @@ def main():
 
       page.screenshot(path="screenshot/eroterest_search_setting.png", full_page=True)
       print("Screenshot saved to screenshot/eroterest_search_setting.png")
+
+      # ---- 自己検証: 設定画面を再度開きチェック状態を集計 ----
+      link = page.get_by_role("link", name=re.compile("表示設定"))
+      link.click(timeout=30000)
+      print("Re-opened settings for verification")
+      settings_form.wait_for(state="visible", timeout=30000)
+      page.evaluate("""() => {
+        document.querySelectorAll('.form-group.proids, .form-group.proids *').forEach(el => {
+          if (el.style.display === 'none') el.style.display = 'block';
+        });
+        document.querySelectorAll('input[type="checkbox"]').forEach(el => {
+          if (el.style.display === 'none') el.style.display = 'block';
+        });
+      }""")
+
+      result = page.evaluate(
+        """(ids) => {
+          const boxes = document.querySelectorAll('input[name="proids[]"]');
+          let checked = 0;
+          let unchecked = 0;
+          const uncheckedIds = [];
+          boxes.forEach(cb => {
+            if (cb.checked) checked += 1;
+            else { unchecked += 1; uncheckedIds.push(cb.id); }
+          });
+          const targetUnchecked = ids.every(id =>
+            document.getElementById('mypage_setting_proids_' + id) &&
+            !document.getElementById('mypage_setting_proids_' + id).checked
+          );
+          return { total: boxes.length, checked, unchecked, uncheckedIds, targetUnchecked };
+        }""",
+        UNCHECKED_IDS,
+      )
+      print(
+        f"Verification: total={result['total']} checked={result['checked']} "
+        f"unchecked={result['unchecked']} targetUnchecked={result['targetUnchecked']}"
+      )
+      print(f"Unchecked IDs: {result['uncheckedIds']}")
+
+      ok = (
+        result["unchecked"] == 7
+        and result["checked"] == result["total"] - 7
+        and result["targetUnchecked"]
+      )
+      if not ok:
+        print("VERIFICATION FAILED: settings do not match expected state")
+        sys.exit(1)
+      print("VERIFICATION PASSED: 34 checked / 7 unchecked, all target IDs unchecked")
+
     except PlaywrightError as e:
       print(f"Failed to open page: {e}")
       page.screenshot(
         path="screenshot/error_eroterest_search_setting.png", full_page=True
       )
       print("Error screenshot saved to screenshot/error_eroterest_search_setting.png")
+      sys.exit(1)
     finally:
       context.close()
 
