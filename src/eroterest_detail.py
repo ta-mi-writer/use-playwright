@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
     action="store_true",
     help="partial 状態のアイテムも再処理する",
   )
+  parser.add_argument(
+    "--only-url",
+    action="append",
+    default=None,
+    help="処理対象を指定URLに絞り込む（複数指定可）",
+  )
   args = parser.parse_args()
   if args.page_delay < 0:
     parser.error("--page-delay は 0 以上を指定してください")
@@ -303,6 +309,21 @@ def main() -> int:
     for i, item in enumerate(items)
     if _should_process(item, args.max_attempts, args.retry_partial)
   ]
+
+  if args.only_url:
+    only_set = set(args.only_url)
+    all_urls = {
+      item.get("url")
+      for item in items
+      if isinstance(item, dict) and isinstance(item.get("url"), str)
+    }
+    unmatched = only_set - all_urls
+    if unmatched:
+      print(
+        "Warning: 指定URLが受信箱に見つかりませんでした: "
+        + ", ".join(sorted(unmatched))
+      )
+    target_indices = [i for i in target_indices if items[i].get("url") in only_set]
   if not target_indices:
     print("処理対象のURLは存在しません。")
     return 0

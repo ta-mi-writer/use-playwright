@@ -1,8 +1,9 @@
 # ブログ自動生成パイプライン 詳細計画書
 
-最終更新: 2026-11-21
+最終更新: 2026-11-22
 元ネタ: `prompt-druft.md`（骨子）
-ステータス: 設計合意済み・実装前
+ステータス: 実装中（M1 完了）
+実測・運用知見: `docs/findings.md`
 
 ---
 
@@ -68,6 +69,7 @@ graph TD
 
 - 実行頻度: 初期設定時・サイト仕様変更時のみ（通常運用では実行しない）
 - 意味: フォームは「表示しない動画サイト」（**チェック＝除外**）。全サイトをチェックした上で対象 7 サイトだけ未チェックにし、実質「7 サイトのみ表示」にする
+- 対象サイトID: TXXX=31 / Upornia=33 / HDZog=38 / VJAV=39 / HotMovs=46 / hclips=49 / Senzuri=50
 - 実装: トグルに依存せず、チェックボックスを直接設定してから保存し、保存後に再読込して検証する
 - 出力: `.browser-data` への設定永続化
 - 注意: 他ステージと同じブラウザプロファイルを使うため同時実行禁止
@@ -109,19 +111,30 @@ graph TD
 - DMM リンクは JS により数秒遅れて挿入されるページがあるため、リンク出現を最大 `--link-wait` 秒（既定6秒）ポーリングしてから抽出する
 - 注意: `al.fanza.co.jp` のアフィリエイトリンクはランキング等の別作品を指すため対象外
 
-### S3: FANZA 作品ページ
+### S3: FANZA 作品ページ（`src/fanza_reviews.py`）
 
-- 入力: `work_url`
-- 抽出物: **CID**、**レビュー原文一式**（評価値・本文・投稿日時・レビュー ID）
-- 出力: `cid` 確定、`reviews_raw` に保存、`status: reviews_done`
-- 注意: 年齢確認画面、レビューの動的読み込み、レビュー 0 件の作品を考慮
+- 入力: `work_url`（CID抽出）
+- FANZA新UI: `https://video.dmm.co.jp/av/content/?id=<CID>`（旧 `www.dmm.co.jp/.../cid=` からリダイレクト）
+- 年齢確認: Cookie `age_check_done=1`（domain `.dmm.co.jp`, path `/`）。それでも出る場合は「はい」リンク/`input[type=image][name=commit]`
+- レビュー取得: `POST https://api.video.dmm.co.jp/graphql` の `UserReviews`
+  - 必須ヘッダ: `content-type: application/json`, `accept: application/graphql-response+json, application/graphql+json, application/json, text/event-stream, multipart/mixed`, `accept-language: en-US`, `fanza-device: BROWSER`, `origin: https://video.dmm.co.jp`, `referer: https://video.dmm.co.jp/av/content/?id=<CID>`
+  - variables: `{"id": CID, "sort": "HELPFUL_COUNT_DESC", "offset": N}`。クエリ内 `limit: 100`
+  - レスポンス `data.reviews.items`。`pageInfo`/`totalCount` は無い
+  - `offset` を 0,100,200,... と増やし、空 or 100未満で終了。IDで重複排除
+- APIは**コメントありレビューのみ**返す。総評価数には「星のみ評価」が含まれるが個別取得不可。件数差を `reviews_rating_only` として保存
+- 総評価数・平均評価は作品ページDOMから取得（`#review` の「総評価数 N」「X.XX点」、`a[href='#review']` の `(N)`）
+- `isExposure`: False でもコメント本文は取得できた。ネタバレ判定のフラグとしては未確定。DOMには「レビューを表示する」ボタンがありインライン開示
+- 保存先: 新規 `data/works.json`（CIDキー）。受信箱は `data/eroterest-page.json` のまま
+- 受信箱の成功時: `status="reviews_done"`, `attempts=0`, `reviews_count`, `reviews_with_comment`, `reviews_rating_only`。失敗時は `attempts` 加算、`max_attempts` で `dead`、`stage="s3"`
 
-### S4: DMM API 補完
+### S4: DMM API 補完（`src/dmm_enrich.py`）
 
 - 入力: `cid`
-- 出力: 作品メタデータ（タイトル、メーカー、レーベル、出演者、ジャンル、発売日、画像 URL）
-- 生 JSON をスナップショット保存し、`status: enriched`
-- 注意: API ID / アフィリエイト ID は `.env` 管理。レート制限は実装時に確認
+- DMM API `https://api.dmm.com/affiliate/v3/ItemList` に `site=FANZA&service=digital&floor=videoa&cid=<CID>&output=json`
+- .env`の`DMM_API_ID`/`DMM_AFFILIATE_ID` が必要。実API検証済み（2026-11-22）。
+- `release_date` はAPIレスポンスのトップレベル `date`（"2026-01-09 00:00:00"）を優先し、`release_date` をフォールバック。先頭10文字を `YYYY-MM-DD` に正規化
+- `map_item` は `iteminfo` の maker/label/genre/actress、`imageURL.large/list`、`review.average/count` をマップ。合成データのセルフテストと認証情報なし経路はPass
+- 成功時 `dmm_status="done"`, `dmm_raw`, `dmm_fetched_at`, マップ済みメタデータ。受信箱は `enriched`。空itemsは `not_found`。失敗は `error` / `dead`（`stage="s4"`)
 
 ### S5: AI 整理
 
@@ -169,6 +182,27 @@ graph TD
 | `video_url` / `video_key` / `video_site` / `work_url` / `cid` | S2b で埋まる（`video_url` はクエリ除去済み）                                                                                                       |
 | `stage` / `reason`                                            | 失敗・対象外の発生ステージと理由                                                                                                                   |
 | `created_at` / `updated_at`                                   | 時刻                                                                                                                                               |
+
+#### 5.1.1 作品キャッシュ（`data/works.json`）
+
+CIDをキーとした作品ごとのレビュー・メタデータキャッシュ。正本ではない。
+
+| フィールド                  | 内容                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cid`                       | 作品CID（一意キー）                                                                                                                                                                                                            |
+| `work_url`                  | FANZA作品URL                                                                                                                                                                                                                   |
+| `reviews`                   | レビュー配列。各項目: `id`(FANZAレビューID), `cid`, `title`, `rating`, `body`, `has_comment`, `reviewer`, `reviewer_id`, `posted_at`, `service`, `service_label`, `is_purchased`, `is_exposure`, `helpful_count`, `source_url` |
+| `reviews_total`             | 総評価数（DOM取得）                                                                                                                                                                                                            |
+| `reviews_average`           | 平均評価（DOM取得）                                                                                                                                                                                                            |
+| `reviews_fetched`           | 取得レビュー件数                                                                                                                                                                                                               |
+| `reviews_with_comment`      | コメントあり件数                                                                                                                                                                                                               |
+| `reviews_rating_only`       | 星のみ評価の推定件数（総数－コメントあり）                                                                                                                                                                                     |
+| `reviews_complete`          | 取得完了フラグ                                                                                                                                                                                                                 |
+| `reviews_status`            | 取得ステータス                                                                                                                                                                                                                 |
+| `reviews_fetched_at`        | 取得日時                                                                                                                                                                                                                       |
+| `reviews_source_url`        | 取得元URL                                                                                                                                                                                                                      |
+| `reviews_pages_fetched`     | 取得ページ数                                                                                                                                                                                                                   |
+| `created_at` / `updated_at` | 時刻                                                                                                                                                                                                                           |
 
 **削除ルール**
 
@@ -223,9 +257,19 @@ article_video_obs
 reviews_raw
   id                 TEXT PRIMARY KEY       -- FANZA レビュー ID（なければハッシュ）
   cid                TEXT
+  title              TEXT
   rating             INTEGER
   body               TEXT
+  reviewer           TEXT
+  reviewer_id        TEXT
   posted_at / fetched_at
+  service            TEXT
+  service_label      TEXT
+  is_purchased       INTEGER
+  is_exposure        INTEGER
+  helpful_count      INTEGER
+  has_comment        INTEGER
+  source_url         TEXT
 
 ai_generations
   id                 INTEGER PRIMARY KEY
@@ -431,6 +475,12 @@ scraping:
 - スクリーンショットは 7 日で削除（容量対策）
 - `.env` は `chmod 600`、git 管理外
 
+### 調査・開発ツール
+
+- `scripts/inspect_links.py`: 読み取り専用のDOM調査ツール。`--url <URL> --details` でリンク・iframe・動画・ネットワークリクエストを確認できる。`--json data/eroterest-page.json --count 3` も可
+- 型チェックは `basedpyright`。`pyproject.toml` の `[tool.basedpyright] extraPaths = ["src"]` で `scripts/` から `utils` を解決する
+- 実測の詳細は `docs/findings.md`
+
 ---
 
 ## 11. Astro / Workers / D1 連携
@@ -470,14 +520,14 @@ D1 スキーマの適用・Astro のルーティング・デプロイ設定は a
 
 ## 12. 実装マイルストーン
 
-| #   | 内容                                                            | 完了条件                                                                  |
-| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| M1  | 受信箱の `status` 化＋S2（外部ブログ解決→作品URL・動画URL抽出） | 作品URL・CIDは常に保存。動画URLは取得できれば保存（片方のみは `partial`） |
-| M2  | S3（CID・レビュー取得）＋S4（DMM API）＋ローカル保存            | レビュー原文と作品メタデータがローカルに揃う                              |
-| M3  | `config/settings.yaml`、AI フォールバック、引用・要約生成       | 2 モデル構成で生成でき、片方停止時も継続できる                            |
-| M4  | D1 スキーマ＋upsert＋Astro MVP（公開作品のみ表示）              | D1 から作品ページが表示される                                             |
-| M5  | 下書き承認フロー、動画追加・更新フロー、シーンラベル編集        | 後から動画を追加して記事更新できる                                        |
-| M6  | cron 自動化、S8（記事再チェック・リンク切れ）、通知             | 無人で 1 週間安定稼働                                                     |
+| #     | 内容                                                            | 完了条件                                                                               |
+| ----- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| M1 ✅ | 受信箱の `status` 化＋S2（外部ブログ解決→作品URL・動画URL抽出） | 作品URL・CIDは常に保存。動画URLは取得できれば保存（片方のみは `partial`）              |
+| M2 ✅ | S3（FANZAレビュー取得）＋S4（DMM API補完）＋ローカル保存        | レビュー原文と作品メタデータが `data/works.json` に揃う。S4実API検証済み（2026-11-22） |
+| M3    | `config/settings.yaml`、AI フォールバック、引用・要約生成       | 2 モデル構成で生成でき、片方停止時も継続できる                                         |
+| M4    | D1 スキーマ＋upsert＋Astro MVP（公開作品のみ表示）              | D1 から作品ページが表示される                                                          |
+| M5    | 下書き承認フロー、動画追加・更新フロー、シーンラベル編集        | 後から動画を追加して記事更新できる                                                     |
+| M6    | cron 自動化、S8（記事再チェック・リンク切れ）、通知             | 無人で 1 週間安定稼働                                                                  |
 
 ---
 
@@ -505,3 +555,52 @@ D1 スキーマの適用・Astro のルーティング・デプロイ設定は a
 6. 通知手段（メール / Slack / Discord など）→ M6 前に決定
 7. 画像の参照方式（DMM 直リンクの規約確認）→ M4 前に確認
 8. `astro-blog` の現状 → **確認済み**（§11）。Content Collections との共存・作品ページ URL 設計は M4 前に確定
+9. ネタバレフラグ（`isExposure`）の判定基準未確定。False でもコメント本文は取得可
+10. 星のみ評価の個別取得不可。総評価数との差分を `reviews_rating_only` として保存のみ
+
+---
+
+## 15. 実装進捗
+
+### M1（完了: 2026-11-22）
+
+- `src/eroterest_detail.py`
+  - `scraped` ブールを `status` 状態機械へ移行（`listed` / `blog_resolved` / `links_done` / `partial` / `unsupported` / `error` / `dead`）
+  - エロタレスト記事 → 外部ブログ → DMM作品URL・CID／動画URL（7サイト）の 2 ホップ抽出
+  - JS 遅延注入に対応（`--link-wait`、既定 6 秒）
+  - クエリ・フラグメント除去。`video_key` / `video_site` を追加し `video_url_raw` を廃止
+  - `--retry-partial` で `partial` を再処理
+- `src/eroterest-serch-setting.py`
+  - 「表示しない動画サイト」（チェック＝除外）に合わせ、全チェック → 対象 7 サイトのみ未チェックを決定的に実行
+  - 保存後の自己検証を追加
+- 検証:
+  - 設定: 40 件中 33 チェック・7 未チェック。検索結果 約 5,856,240 件 → 約 938,970 件
+  - 抽出: 3 件すべて `links_done`（vjav / hdzog / upornia、CID 一致）
+  - `ruff` / `basedpyright` / `py_compile` パス
+- キュー: 約 105 件、うち 3 件 `links_done`。残りは `listed`
+
+### M2（完了: 2026-11-22）
+
+- `src/fanza_reviews.py`
+  - FANZA新UI `https://video.dmm.co.jp/av/content/?id=<CID>` へ移行。年齢確認クッキー `age_check_done=1`
+  - GraphQL `UserReviews`（`POST https://api.video.dmm.co.jp/graphql`）でレビュー取得。必須ヘッダ・ページング（`offset` 100刻み）を実装
+  - 星のみ評価は個別取得不可。総評価数・平均評価は作品ページDOMから取得。差分を `reviews_rating_only` として保存
+  - `isExposure` は False でも本文取得可。ネタバレ判定フラグとしては未確定
+  - 保存先 `data/works.json`（CIDキー）。受信箱 `data/eroterest-page.json` は `reviews_done` / `dead`（`stage="s3"`）
+  - 実測: roe00453（コメント3/総数6/星のみ3）、roe00481（6/7/1）、jul00142（7/10/3）、1dandy00914b（90/111/21、9ページ）
+- `src/dmm_enrich.py`
+  - DMM API `ItemList`（`site=FANZA&service=digital&floor=videoa&cid=<CID>`）を実装。`map_item` でメーカー/レーベル/ジャンル/出演者・画像・レビュー平均/件数をマップ
+  - `date`（"2026-01-09 00:00:00"）を優先・`release_date` フォールバック。先頭10文字を `YYYY-MM-DD` に正規化
+  - 合成データのセルフテストと認証情報なし経路はPass。実API検証済み（2026-11-22）
+  - 成功 `dmm_status="done"` / 空items `not_found` / 失敗 `error`/`dead`（`stage="s4"`）
+  - 実API検証: roe00453 / roe00481 / jul00142 すべて `dmm_status="done"`、`dmm_raw` あり。受信箱 `status="enriched"`、`attempts=0`、`stage`/`last_error` なし。`release_date`: roe00453=2026-01-09 / roe00481=2026-04-10 / jul00142=2020-02-22。レビュー値 S3と一致（4.17/6, 4.86/7, 4.00/10）
+- `utils.load_existing` / `merge_urls` で受信箱スキーマ退行を修正。既存フィールド保持、旧 `scraped` は `status="listed"` に移行
+- `eroterest_detail.py` に `--only-url` を追加
+- `src` の ruff / basedpyright / py_compile はPass
+- `scripts/` の調査用ファイル（`inspect_fanza*.py`, `fanza_reviews_query*.graphql`, `fanza_reviews_variables.json`）は残す。scriptsのruff警告は調査用のため未修正
+
+### 次の作業
+
+- M3（`config/settings.yaml`、AI フォールバック、引用・要約生成）
+
+実測で分かったサイト構造・URL パターン・運用コマンドは `docs/findings.md` に分離して記録している。

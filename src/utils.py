@@ -1,7 +1,9 @@
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -14,8 +16,8 @@ DEFAULT_USER_AGENT = (
 )
 
 
-def load_existing(path: Path) -> dict[str, bool]:
-  """既存データを {url: scraped} で読み込む。
+def load_existing(path: Path) -> dict[str, dict]:
+  """既存データを {url: item} で読み込む。
 
   読めない場合は既存ファイルを退避してから空として扱い、
   壊れた既存データを新規URLで上書き流失させることを防ぐ。
@@ -39,40 +41,47 @@ def load_existing(path: Path) -> dict[str, bool]:
     print(f"Warning: 既存データの形式が不正です。{backup} に退避します。")
     return {}
 
-  existing: dict[str, bool] = {}
+  existing: dict[str, dict] = {}
   for item in data:
     if not isinstance(item, dict):
       continue
     url = item.get("url")
     if not isinstance(url, str):
       continue
-    existing[url] = bool(item.get("scraped", False))
+    # 旧スキーマ移行: scraped 付きで status なしは listed にし、再処理対象とする
+    if "scraped" in item:
+      if "status" not in item:
+        item["status"] = "listed"
+      del item["scraped"]
+    if "attempts" not in item:
+      item["attempts"] = 0
+    existing[url] = item
   return existing
 
 
-def merge_urls(existing: dict[str, bool], urls: list[str]) -> list[dict[str, object]]:
+def merge_urls(existing: dict[str, dict], urls: Iterable[str]) -> list[dict]:
   """既存データを保持したまま、今回取得したURLを追加する。
 
-  - 既存URLは並びと scraped フラグを維持する（消さない）
-  - 今回初めて取得したURLは scraped=False で末尾に追加する
+  - 既存URLは元の順序で先に並べ、全フィールドを維持する（消さない）
+  - 今回初めて取得したURLは {"url": url, "status": "listed", "attempts": 0} で末尾に追加する
   """
-  result: list[dict[str, object]] = []
+  result: list[dict] = []
   seen: set[str] = set()
 
-  for url, scraped in existing.items():
+  for url, item in existing.items():
     seen.add(url)
-    result.append({"url": url, "scraped": scraped})
+    result.append(item)
 
   for url in urls:
     if url in seen:
       continue
     seen.add(url)
-    result.append({"url": url, "scraped": False})
+    result.append({"url": url, "status": "listed", "attempts": 0})
 
   return result
 
 
-def write_json_atomic(path: Path, data: list[dict[str, object]]) -> None:
+def write_json_atomic(path: Path, data: dict[str, Any] | list[Any]) -> None:
   """一時ファイルに書いてから os.replace で原子的に置き換える。
 
   途中で中断されても既存ファイルが壊れない。
